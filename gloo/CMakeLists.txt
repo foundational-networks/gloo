@@ -119,6 +119,7 @@ if(GLOO_HAVE_TRANSPORT_PEEL)
     "${CMAKE_CURRENT_SOURCE_DIR}/peel_broadcast_stop_and_wait.cc"
     )
   list(APPEND GLOO_HDRS
+    "${CMAKE_CURRENT_SOURCE_DIR}/peel_pytorch_runtime.h"
     "${CMAKE_CURRENT_SOURCE_DIR}/peel_broadcast.h"
     "${CMAKE_CURRENT_SOURCE_DIR}/peel_broadcast_ring.h"
     "${CMAKE_CURRENT_SOURCE_DIR}/peel_broadcast_stop_and_wait.h"
@@ -192,8 +193,7 @@ endif()
 
 target_link_libraries(gloo PRIVATE ${gloo_DEPENDENCY_LIBS})
 if(GLOO_HAVE_TRANSPORT_PEEL)
-  target_link_libraries(gloo PRIVATE ${HIREDIS_LIBRARIES})
-  target_include_directories(gloo PRIVATE ${HIREDIS_INCLUDE_DIRS})
+  target_link_libraries(gloo PRIVATE PkgConfig::PEEL_HIREDIS)
 endif()
 
 # Add Interface include directories that are relocatable.

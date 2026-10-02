@@ -11,6 +11,8 @@ import torch.distributed as dist
 from torch import nn
 from torch.nn.parallel import DistributedDataParallel as DDP
 
+from pytorch_peel_backend import init_process_group
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
@@ -22,6 +24,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--learning-rate", type=float, default=0.05)
     parser.add_argument("--timeout-seconds", type=int, default=120)
     parser.add_argument("--seed", type=int, default=20260710)
+    parser.add_argument("--bucket-cap-mb", type=float, default=100.0)
     return parser.parse_args()
 
 
@@ -36,14 +39,17 @@ def tensor_digest(tensor: torch.Tensor) -> str:
 
 def main() -> None:
     args = parse_args()
+    if min(args.steps, args.batch_size, args.input_size, args.hidden_size, args.classes) <= 0:
+        raise ValueError("Steps and model/batch dimensions must be positive")
+    if args.bucket_cap_mb <= 0:
+        raise ValueError("--bucket-cap-mb must be positive")
     rank = int(os.environ["RANK"])
     world_size = int(os.environ["WORLD_SIZE"])
 
     torch.set_num_threads(1)
     torch.manual_seed(args.seed)
 
-    dist.init_process_group(
-        backend="gloo",
+    init_process_group(
         timeout=timedelta(seconds=args.timeout_seconds),
     )
 
@@ -51,7 +57,9 @@ def main() -> None:
     if rank == 0:
         print(
             f"START host={socket.gethostname()} world_size={world_size} "
-            f"allreduce={algorithm}"
+            f"allreduce={algorithm} "
+            f"broadcast={os.environ.get('GLOO_BROADCAST_ALGORITHM', 'default')} "
+            f"allgather={os.environ.get('GLOO_ALLGATHER_ALGORITHM', 'default')}"
         )
 
     probe = torch.tensor([float(rank + 1)], dtype=torch.float32)
@@ -71,7 +79,7 @@ def main() -> None:
     ddp_model = DDP(
         model,
         broadcast_buffers=False,
-        bucket_cap_mb=100,
+        bucket_cap_mb=args.bucket_cap_mb,
         find_unused_parameters=False,
     )
     optimizer = torch.optim.SGD(ddp_model.parameters(), lr=args.learning_rate)

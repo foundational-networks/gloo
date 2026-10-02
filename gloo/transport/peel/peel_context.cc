@@ -38,6 +38,10 @@ static PeelTransportConfig makeBaseTransportConfig(const PeelContextConfig& c) {
     tc.max_chunk_size = c.max_chunk_size;
     tc.dscp           = c.dscp;
     tc.sender_rank    = c.sender_rank;
+    tc.reno_dupack_pct = c.reno_dupack_pct;
+    tc.reno_tagg_ms = c.reno_tagg_ms;
+    tc.reno_ooo_buffer_segments = c.reno_ooo_buffer_segments;
+    tc.reno_rto_reset_on_ack = c.reno_rto_reset_on_ack;
     return tc;
 }
 
@@ -46,13 +50,22 @@ static PeelTransportConfig makeBaseTransportConfig(const PeelContextConfig& c) {
 // ---------------------------------------------------------------------------
 
 bool PeelContext::init() {
+    return initWithCongestionControl(PeelCongestionControl::StopAndWait);
+}
+
+bool PeelContext::initReno() {
+    return initWithCongestionControl(PeelCongestionControl::Reno);
+}
+
+bool PeelContext::initWithCongestionControl(
+        PeelCongestionControl mode) {
     // Fall back to flat single-transport mode when no topology information
     // is available. This preserves the pre-PeelTree behaviour and keeps the
     // test binary working without a topology file.
     if (config_.topology_file.empty() || config_.peer_ips.empty()) {
         std::cout << "peel_context[" << config_.rank
                   << "]: no topology/peer_ips — using flat single transport\n";
-        return initSingleTransport();
+        return initSingleTransport(mode);
     }
 
     // ── Build spanning tree ──────────────────────────────────────────────────
@@ -92,6 +105,7 @@ bool PeelContext::init() {
             continue;
 
         PeelTransportConfig tc  = makeBaseTransportConfig(config_);
+        tc.congestion_control    = mode;
         tc.base_port            = sub.base_port;
         tc.participant_ranks    = sub.receiver_ranks;
         tc.use_cidr_rules_mac   = true;
@@ -129,8 +143,9 @@ bool PeelContext::init() {
 // initSingleTransport() — flat fallback (no topology file)
 // ---------------------------------------------------------------------------
 
-bool PeelContext::initSingleTransport() {
+bool PeelContext::initSingleTransport(PeelCongestionControl mode) {
     PeelTransportConfig tc = makeBaseTransportConfig(config_);
+    tc.congestion_control = mode;
     tc.base_port = config_.base_port;
     // participant_ranks left empty → PeelFullMesh uses all world_size ranks.
     // use_cidr_rules_mac stays false → standard derived multicast MAC.
@@ -152,6 +167,16 @@ bool PeelContext::initSingleTransport() {
 }
 
 bool PeelContext::initRing() {
+    return initRingWithCongestionControl(
+        PeelCongestionControl::StopAndWait);
+}
+
+bool PeelContext::initRingReno() {
+    return initRingWithCongestionControl(PeelCongestionControl::Reno);
+}
+
+bool PeelContext::initRingWithCongestionControl(
+        PeelCongestionControl mode) {
     ring_transports_.clear();
     ring_hops_.clear();
     broadcast_ring_.reset();
@@ -179,6 +204,7 @@ bool PeelContext::initRing() {
         // this hop and skip it in PeelBroadcastRing::run().
         if (config_.rank == sender || config_.rank == receiver) {
             PeelTransportConfig tc = makeBaseTransportConfig(config_);
+            tc.congestion_control = mode;
             tc.participant_ranks = {sender, receiver};
             tc.sender_rank = sender;
             tc.base_port = static_cast<uint16_t>(

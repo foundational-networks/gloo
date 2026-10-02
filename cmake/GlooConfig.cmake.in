@@ -12,6 +12,15 @@ set(GLOO_VERSION_MINOR @GLOO_VERSION_MINOR@)
 set(GLOO_VERSION_PATCH @GLOO_VERSION_PATCH@)
 set(GLOO_VERSION "@GLOO_VERSION@")
 
+# Recreate the PEEL client-library dependency for installed static Gloo targets.
+# The embedded PyTorch build already has this GLOBAL imported target.
+if("@CMAKE_SYSTEM_NAME@" STREQUAL "Linux" AND "@USE_PEEL@"
+   AND NOT TARGET PkgConfig::PEEL_HIREDIS)
+  include(CMakeFindDependencyMacro)
+  find_dependency(PkgConfig)
+  pkg_check_modules(PEEL_HIREDIS REQUIRED IMPORTED_TARGET GLOBAL hiredis)
+endif()
+
 # import targets
 include ("${CMAKE_CURRENT_LIST_DIR}/GlooTargets.cmake")
 

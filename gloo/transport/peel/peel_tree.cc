@@ -530,10 +530,17 @@ bool PeelTree::partitionSubtrees(
             //   base_port
             //   + sender_rank * world_size * world_size   (isolates each sender's trees)
             //   + subtree_id  * world_size                (isolates subtrees within a tree)
-            sub.base_port = static_cast<uint16_t>(
-                config_.base_port
-                + config_.sender_rank * config_.world_size * config_.world_size
-                + sub.subtree_id * config_.world_size);
+            const uint64_t port = static_cast<uint64_t>(config_.base_port)
+                + static_cast<uint64_t>(config_.sender_rank)
+                    * config_.world_size * config_.world_size
+                + static_cast<uint64_t>(sub.subtree_id) * config_.world_size;
+            if (sub.subtree_id >= config_.world_size ||
+                port + config_.world_size - 1 > 65535) {
+                std::cerr << "peel_tree[" << config_.rank
+                          << "]: subtree port range exceeds reserved capacity\n";
+                return false;
+            }
+            sub.base_port = static_cast<uint16_t>(port);
 
             // Pack the 48-bit mac (stored in low 48 bits of uint64_t) into
             // cidr_rules_mac[6] in big-endian order (byte 0 = MSB).

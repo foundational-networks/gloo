@@ -13,6 +13,7 @@
 
 #include "gloo/common/logging.h"
 #include "gloo/types.h"
+#include "gloo/peel_pytorch_runtime.h"
 
 namespace gloo {
 
@@ -24,6 +25,7 @@ void allgather(AllgatherOptions& opts) {
 
   // Sanity checks
   GLOO_ENFORCE(opts.elementSize > 0);
+  GLOO_ENFORCE(out);
   const auto recvRank = (context->size + context->rank - 1) % context->size;
   GLOO_ENFORCE(
       recvRank == context->rank || context->getPair(recvRank),
@@ -56,6 +58,21 @@ void allgather(AllgatherOptions& opts) {
   // Short circuit if there is only a single process or the output is empty.
   if (context->size == 1 || outBytes == 0) {
     return;
+  }
+
+  const auto algorithm = peel_bridge::selectedAlgorithm(peel_bridge::Collective::Allgather);
+  if (peel_bridge::isPeel(algorithm)) {
+#if GLOO_HAVE_TRANSPORT_PEEL
+    std::vector<void*> buffers(context->size);
+    for (int rank = 0; rank < context->size; ++rank)
+      buffers[rank] = static_cast<uint8_t*>(out->ptr) + rank * inBytes;
+    peel_bridge::Runtime::instance(peel_bridge::Collective::Allgather).allgather(
+        context, algorithm, buffers, inBytes, opts.tag, opts.timeout);
+    return;
+#else
+    GLOO_ENFORCE(false,
+                 "A PEEL allgather was requested but Gloo was built without USE_PEEL");
+#endif
   }
 
   // The chunk size may not be divisible by 2; use dynamic lookup.

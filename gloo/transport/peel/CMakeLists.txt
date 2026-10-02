@@ -7,17 +7,16 @@ if(NOT ${CMAKE_SYSTEM_NAME} STREQUAL "Linux")
 endif()
 
 find_package(PkgConfig REQUIRED)
-pkg_check_modules(HIREDIS REQUIRED hiredis)
-
-# Export hiredis to the parent gloo target.
-set(HIREDIS_INCLUDE_DIRS ${HIREDIS_INCLUDE_DIRS} PARENT_SCOPE)
-set(HIREDIS_LIBRARIES ${HIREDIS_LIBRARIES} PARENT_SCOPE)
+# A GLOBAL imported target survives the peel -> transport -> gloo directory
+# nesting and carries non-system include paths and library directories too.
+pkg_check_modules(PEEL_HIREDIS REQUIRED IMPORTED_TARGET GLOBAL hiredis)
 
 list(APPEND GLOO_TRANSPORT_SRCS
   "${CMAKE_CURRENT_SOURCE_DIR}/peel_protocol.cc"
   "${CMAKE_CURRENT_SOURCE_DIR}/peel_redis.cc"
   "${CMAKE_CURRENT_SOURCE_DIR}/peel_full_mesh.cc"
   "${CMAKE_CURRENT_SOURCE_DIR}/peel_transport.cc"
+  "${CMAKE_CURRENT_SOURCE_DIR}/peel_transport_reno.cc"
   "${CMAKE_CURRENT_SOURCE_DIR}/peel_broadcast.cc"
   "${CMAKE_CURRENT_SOURCE_DIR}/peel_broadcast_ring.cc"
   "${CMAKE_CURRENT_SOURCE_DIR}/peel_broadcast_stop_and_wait.cc"
@@ -48,24 +47,24 @@ list(APPEND GLOO_TRANSPORT_HDRS
 # not installed and are only built when BUILD_TEST is enabled.
 if(BUILD_TEST)
   add_executable(test_peel_broadcast test_peel_broadcast.cc)
-  target_link_libraries(test_peel_broadcast gloo ${HIREDIS_LIBRARIES})
+  target_link_libraries(test_peel_broadcast gloo PkgConfig::PEEL_HIREDIS)
   target_include_directories(test_peel_broadcast PRIVATE
     ${PROJECT_SOURCE_DIR}
-    ${HIREDIS_INCLUDE_DIRS})
+    ${PEEL_HIREDIS_INCLUDE_DIRS})
   target_compile_definitions(test_peel_broadcast PRIVATE GLOO_USE_REDIS=1)
 
   add_executable(test_peel_allgather test_peel_allgather.cc)
-  target_link_libraries(test_peel_allgather gloo ${HIREDIS_LIBRARIES})
+  target_link_libraries(test_peel_allgather gloo PkgConfig::PEEL_HIREDIS)
   target_include_directories(test_peel_allgather PRIVATE
     ${PROJECT_SOURCE_DIR}
-    ${HIREDIS_INCLUDE_DIRS})
+    ${PEEL_HIREDIS_INCLUDE_DIRS})
   target_compile_definitions(test_peel_allgather PRIVATE GLOO_USE_REDIS=1)
 
   add_executable(test_peel_broadcast_ring test_peel_broadcast_ring.cc)
-  target_link_libraries(test_peel_broadcast_ring gloo ${HIREDIS_LIBRARIES})
+  target_link_libraries(test_peel_broadcast_ring gloo PkgConfig::PEEL_HIREDIS)
   target_include_directories(test_peel_broadcast_ring PRIVATE
     ${PROJECT_SOURCE_DIR}
-    ${HIREDIS_INCLUDE_DIRS})
+    ${PEEL_HIREDIS_INCLUDE_DIRS})
   target_compile_definitions(test_peel_broadcast_ring PRIVATE GLOO_USE_REDIS=1)
 endif()
 

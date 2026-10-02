@@ -7,6 +7,8 @@ import os
 import torch
 import torch.distributed as dist
 
+from pytorch_peel_backend import init_process_group
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
@@ -29,8 +31,7 @@ def main() -> None:
         raise ValueError("--iterations must be positive")
 
     torch.set_num_threads(1)
-    dist.init_process_group(
-        backend="gloo",
+    init_process_group(
         timeout=datetime.timedelta(seconds=args.timeout_seconds),
     )
 
