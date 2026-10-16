@@ -3,6 +3,7 @@
 #include "peel_allgather.h"
 
 #include <atomic>
+#include <exception>
 #include <iostream>
 #include <thread>
 
@@ -59,13 +60,25 @@ bool PeelAllgather::runParallel(const std::vector<void*>& bufs, size_t size) {
     threads.reserve(n);
     std::atomic<bool> ok{true};
 
-    for (int r = 0; r < n; ++r) {
-        threads.emplace_back([this, r, &bufs, size, &ok]() {
-            if (!contexts_[r]->broadcast(r, bufs[r], size)) {
-                std::cerr << "[PeelAllgather] parallel broadcast failed for rank " << r << "\n";
-                ok.store(false, std::memory_order_relaxed);
-            }
-        });
+    try {
+        for (int r = 0; r < n; ++r) {
+            threads.emplace_back([this, r, &bufs, size, &ok]() {
+                try {
+                    if (!contexts_[r]->broadcast(r, bufs[r], size)) {
+                        std::cerr << "[PeelAllgather] parallel broadcast failed for rank " << r << "\n";
+                        ok.store(false, std::memory_order_relaxed);
+                    }
+                } catch (const std::exception& error) {
+                    std::cerr << "[PeelAllgather] worker exception: " << error.what() << "\n";
+                    ok.store(false, std::memory_order_relaxed);
+                } catch (...) {
+                    ok.store(false, std::memory_order_relaxed);
+                }
+            });
+        }
+    } catch (const std::exception& error) {
+        std::cerr << "[PeelAllgather] worker creation failed: " << error.what() << "\n";
+        ok.store(false, std::memory_order_relaxed);
     }
 
     for (auto& t : threads) {

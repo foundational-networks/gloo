@@ -277,7 +277,10 @@ template <typename T>
 void Runner::run(BenchmarkFn<T>& fn) {
   printHeader();
 
-  if (options_.elements > 0) {
+  const bool newPeelAllreduce =
+      options_.benchmark == "peel_allreduce_sdn_reno" ||
+      options_.benchmark == "peel_allreduce_ring_sharded_reno";
+  if (options_.elements > 0 || (newPeelAllreduce && options_.elements == 0)) {
     run(fn, options_.elements);
     checkErrors();
     printFooter();
@@ -379,6 +382,15 @@ void Runner::run(BenchmarkFn<T>& fn, size_t n) {
     }
     // Limit the number of iterations to kMaxIterations
     iterations = broadcast(std::min(nextIterations, kMaxIterations));
+  }
+
+  // Verify the last repeated operation outside the measured call timers.
+  if (options_.verify &&
+      (options_.benchmark == "peel_allreduce_sdn_reno" ||
+       options_.benchmark == "peel_allreduce_ring_sharded_reno")) {
+    for (auto& benchmark : benchmarks) {
+      benchmark->verify(mismatchErrors_);
+    }
   }
 
   // Print results
@@ -502,7 +514,20 @@ void Runner::printDistribution(
     size_t elements,
     size_t elementSize,
     const Distribution& latency) {
-  // Only output results for one rank
+  // New PEEL selectors expose each rank's batch total after timing. This
+  // supports maximum-rank elapsed analysis without adding timed TCP traffic.
+  if (options_.benchmark == "peel_allreduce_sdn_reno" ||
+      options_.benchmark == "peel_allreduce_ring_sharded_reno") {
+    std::cout << "PEEL_SAMPLE_SUMMARY rank=" << options_.contextRank
+              << " elements=" << elements << " dtype_bytes=" << elementSize
+              << " iterations=" << latency.size()
+              << " total_ns=" << latency.sum()
+              << " min_ns=" << latency.min()
+              << " p50_ns=" << latency.percentile(0.50)
+              << " p99_ns=" << latency.percentile(0.99)
+              << " max_ns=" << latency.max() << std::endl;
+  }
+  // Only output the traditional formatted table for one rank
   if (options_.contextRank != 0) {
     return;
   }

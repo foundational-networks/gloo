@@ -1,4 +1,5 @@
 #include "peel_transport.h"
+#include "peel_transport_wakeup.h"
 
 #include <algorithm>
 #include <arpa/inet.h>
@@ -317,6 +318,13 @@ bool PeelTransport::sendReno(const void* data, size_t size) {
         return true;
     }
 
+    detail::PeelLocalWakeup aggregator_wakeup;
+    if (!aggregator_wakeup.valid() || channel->fd >= FD_SETSIZE) {
+        std::cerr << "peel_reno[" << config_.rank
+                  << "]: cannot prepare ACK aggregator wakeup\n";
+        return false;
+    }
+
     const uint16_t initial_window =
         static_cast<uint16_t>(std::min<uint32_t>(
             config_.reno_ooo_buffer_segments, 0xffffu));
@@ -350,15 +358,19 @@ bool PeelTransport::sendReno(const void* data, size_t size) {
             fd_set read_fds;
             FD_ZERO(&read_fds);
             FD_SET(channel->fd, &read_fds);
+            FD_SET(aggregator_wakeup.fd(), &read_fds);
             timeval timeout{};
             timeout.tv_usec = 10000;
             if (select(
-                    channel->fd + 1,
+                    std::max(channel->fd, aggregator_wakeup.fd()) + 1,
                     &read_fds,
                     nullptr,
                     nullptr,
                     &timeout) <= 0) {
                 continue;
+            }
+            if (FD_ISSET(aggregator_wakeup.fd(), &read_fds)) {
+                break;
             }
 
             uint8_t frame[2048];
@@ -768,6 +780,9 @@ bool PeelTransport::sendReno(const void* data, size_t size) {
 
     const bool transferred = transfer();
     aggregator_stop.store(true);
+    // A condition-variable notification does not interrupt the socket select.
+    // Preserve its timeout as a fallback, but wake normal shutdown immediately.
+    aggregator_wakeup.signal();
     aggregator.cv.notify_all();
     if (aggregator_thread.joinable()) {
         aggregator_thread.join();

@@ -65,6 +65,12 @@ struct options {
   std::string caFile;
   std::string caPath;
 
+  // Explicit rank-ordered peers for standalone PEEL allreduce.
+  std::vector<std::string> peelHosts;
+  int peelTileBytes = 256 * 1024;
+  int peelTimeoutMs = 120000;
+  bool peelReduceParallel = false;
+
   // Peel broadcast
   std::string peelMcastGroup   = "239.255.0.1";
   std::string peelIface;

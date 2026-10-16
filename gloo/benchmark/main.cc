@@ -38,6 +38,7 @@
 
 #include "gloo/benchmark/benchmark.h"
 #include "gloo/benchmark/runner.h"
+#include "gloo/benchmark/peel_allreduce_benchmark.h"
 
 #include "gloo/transport/peel/peel_allgather.h"
 #include "gloo/transport/peel/peel_allreduce_ring.h"
@@ -1821,6 +1822,12 @@ std::mutex PeelAllreduceRingBenchmark<T>::initMutex_;
       return gloo::make_unique<PeelAllgatherRingBenchmark<T>>(                 \
           context, x, true);                                                   \
     };                                                                         \
+  } else if (x.benchmark == "peel_allreduce_sdn_reno" ||                       \
+             x.benchmark == "peel_allreduce_ring_sharded_reno") {              \
+    fn = [&](std::shared_ptr<Context>& context) {                              \
+      return gloo::make_unique<PeelAllreduceRenoBenchmark<T>>(                 \
+          context, x, x.benchmark == "peel_allreduce_sdn_reno");               \
+    };                                                                        \
   } else if (x.benchmark == "peel_allreduce_ring") {                          \
     fn = [&](std::shared_ptr<Context>& context) {                              \
       return gloo::make_unique<PeelAllreduceRingBenchmark<T>>(context, x);     \

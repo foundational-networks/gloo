@@ -9,6 +9,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstring>
+#include <exception>
 #include <iostream>
 #include <linux/if_packet.h>
 #include <net/if.h>
@@ -310,7 +311,16 @@ void PeelTransport::workerLoop() {
         WorkItem item = work_item_;
         lock.unlock();
 
-        bool result = executeBroadcast(item.root, item.data, item.size);
+        bool result = false;
+        try {
+            result = executeBroadcast(item.root, item.data, item.size);
+        } catch (const std::exception& error) {
+            std::cerr << "peel_transport[" << config_.rank
+                      << "]: worker exception: " << error.what() << "\n";
+        } catch (...) {
+            std::cerr << "peel_transport[" << config_.rank
+                      << "]: worker exception\n";
+        }
 
         // Publish the result and wake the waiting main thread.
         lock.lock();

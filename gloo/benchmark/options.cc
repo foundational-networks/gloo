@@ -68,6 +68,10 @@ static void usage(int status, const char* argv0) {
   X("  By default the control TCP device uses --peel-iface, so --tcp-device");
   X("  is not needed for Peel-only benchmark commands.");
   X("");
+  X("      --peel-hosts=IP[,IP...]    Explicit rank-ordered IPv4 peers for new allreduce selectors");
+  X("      --peel-tile-bytes=BYTES    Native SDN per-owner tile size (default: 262144)");
+  X("      --peel-reduce-parallel     Native SDN reduce-scatter owner groups run concurrently (default: sequential)");
+  X("      --peel-timeout=MS          PEEL data-operation timeout (default: 120000)");
   X("      --peel-iface=IFACE         NIC for multicast, e.g. eth0 (required)");
   X("      --peel-mcast-group=IP      Multicast group (default: 239.255.0.1)");
   X("      --peel-base-port=PORT      Base UDP port (default: 50000)");
@@ -133,6 +137,8 @@ static void usage(int status, const char* argv0) {
   X("  peel_allgather_reno");
   X("  peel_allgather_ring");
   X("  peel_allgather_ring_reno");
+  X("  peel_allreduce_sdn_reno");
+  X("  peel_allreduce_ring_sharded_reno");
   X("  peel_allreduce_ring");
   X("  peel_allreduce_ring_reno");
   X("  broadcast_ring");
@@ -212,6 +218,10 @@ struct options parseOptions(int argc, char** argv) {
       {"cert", required_argument, nullptr, 0x2002},
       {"ca-file", required_argument, nullptr, 0x2003},
       {"ca-path", required_argument, nullptr, 0x2004},
+      {"peel-hosts", required_argument, nullptr, 0x300e},
+      {"peel-tile-bytes", required_argument, nullptr, 0x300f},
+      {"peel-timeout", required_argument, nullptr, 0x3010},
+      {"peel-reduce-parallel", no_argument, nullptr, 0x3011},
       {"peel-iface", required_argument, nullptr, 0x3001},
       {"peel-mcast-group", required_argument, nullptr, 0x3002},
       {"peel-base-port", required_argument, nullptr, 0x3003},
@@ -455,6 +465,18 @@ struct options parseOptions(int argc, char** argv) {
             tolower(optarg[0]) == 'y';
         break;
       }
+      case 0x300e:
+        result.peelHosts = split(optarg, ',');
+        break;
+      case 0x300f:
+        result.peelTileBytes = atoi(optarg);
+        break;
+      case 0x3010:
+        result.peelTimeoutMs = atoi(optarg);
+        break;
+      case 0x3011:
+        result.peelReduceParallel = true;
+        break;
       case 0xffff:
       {
         usage(EXIT_SUCCESS, argv[0]);

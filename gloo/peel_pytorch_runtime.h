@@ -19,12 +19,16 @@
 namespace gloo {
 namespace peel_bridge {
 
-enum class Collective { Broadcast, Allgather, Allreduce };
+enum class Collective { Broadcast, Allgather, Allreduce, ReduceScatter };
 enum class Algorithm {
   Default,
   GlooRing,
   Native,
   NativeReno,
+  NativeAllreduceReno,
+  NativeReduceScatterReno,
+  RingAllreduceShardedReno,
+  RingReduceScatterShardedReno,
   Ring,
   RingReno,
   BinomialStopAndWait,
@@ -77,6 +81,7 @@ inline const char* selector(Collective kind) {
     case Collective::Broadcast: return "GLOO_BROADCAST_ALGORITHM";
     case Collective::Allgather: return "GLOO_ALLGATHER_ALGORITHM";
     case Collective::Allreduce: return "GLOO_ALLREDUCE_ALGORITHM";
+    case Collective::ReduceScatter: return "GLOO_REDUCE_SCATTER_ALGORITHM";
   }
   return "";
 }
@@ -86,6 +91,7 @@ inline const char* operationName(Collective kind) {
     case Collective::Broadcast: return "broadcast";
     case Collective::Allgather: return "allgather";
     case Collective::Allreduce: return "allreduce";
+    case Collective::ReduceScatter: return "reduce_scatter";
   }
   return "";
 }
@@ -95,6 +101,16 @@ inline Algorithm selectedAlgorithm(Collective kind) {
   const std::string op = operationName(kind);
   if (value.empty() || value == "default" || value == op)
     return Algorithm::Default;
+  if (kind == Collective::Allreduce && value == "peel_allreduce_reno")
+    return Algorithm::NativeAllreduceReno;
+  if (kind == Collective::Allreduce && value == "peel_allreduce_ring_sharded_reno")
+    return Algorithm::RingAllreduceShardedReno;
+  if (kind == Collective::ReduceScatter && value == "peel_reduce_scatter_ring_sharded_reno")
+    return Algorithm::RingReduceScatterShardedReno;
+  if (kind == Collective::ReduceScatter) {
+    GLOO_ENFORCE(value == "peel_reduce_scatter_reno", "Unsupported ", selector(kind), ": ", value);
+    return Algorithm::NativeReduceScatterReno;
+  }
   if (kind == Collective::Broadcast &&
       (value == "ring" || value == "broadcast_ring"))
     return Algorithm::GlooRing;
@@ -120,11 +136,14 @@ inline bool isPeel(Algorithm algorithm) {
 }
 
 inline bool needsTopology(Algorithm algorithm) {
-  return algorithm == Algorithm::Native || algorithm == Algorithm::NativeReno;
+  return algorithm == Algorithm::Native || algorithm == Algorithm::NativeReno ||
+      algorithm == Algorithm::NativeAllreduceReno || algorithm == Algorithm::NativeReduceScatterReno;
 }
 
 inline bool usesReno(Algorithm algorithm) {
-  return algorithm == Algorithm::NativeReno || algorithm == Algorithm::RingReno;
+  return algorithm == Algorithm::NativeReno || algorithm == Algorithm::RingReno ||
+      algorithm == Algorithm::NativeAllreduceReno || algorithm == Algorithm::NativeReduceScatterReno ||
+      algorithm == Algorithm::RingAllreduceShardedReno || algorithm == Algorithm::RingReduceScatterShardedReno;
 }
 
 inline const char* algorithmName(Collective kind, Algorithm algorithm) {
@@ -147,6 +166,10 @@ inline const char* algorithmName(Collective kind, Algorithm algorithm) {
       default: return "default";
     }
   }
+  if (algorithm == Algorithm::RingAllreduceShardedReno) return "peel_allreduce_ring_sharded_reno";
+  if (algorithm == Algorithm::RingReduceScatterShardedReno) return "peel_reduce_scatter_ring_sharded_reno";
+  if (algorithm == Algorithm::NativeAllreduceReno) return "peel_allreduce_reno";
+  if (algorithm == Algorithm::NativeReduceScatterReno) return "peel_reduce_scatter_reno";
   return usesReno(algorithm) ? "peel_allreduce_ring_reno" : "peel_allreduce_ring";
 }
 
@@ -155,12 +178,15 @@ inline const char* portVariable(Collective kind) {
     case Collective::Broadcast: return "GLOO_PEEL_BROADCAST_BASE_PORT";
     case Collective::Allgather: return "GLOO_PEEL_ALLGATHER_BASE_PORT";
     case Collective::Allreduce: return "GLOO_PEEL_ALLREDUCE_BASE_PORT";
+    case Collective::ReduceScatter: return "GLOO_PEEL_REDUCE_SCATTER_BASE_PORT";
   }
   return "";
 }
 
 inline long basePort(Collective kind) {
-  const long fallback = 50000 + 1000 * static_cast<int>(kind);
+  // Native allreduce reserves 1024 ports at world size eight (52000..53023).
+  const long fallback = kind == Collective::ReduceScatter
+      ? 53024 : 50000 + 1000 * static_cast<int>(kind);
   return env(portVariable(kind)).empty()
       ? integerEnv("GLOO_PEEL_BASE_PORT", fallback, 1, 65535)
       : integerEnv(portVariable(kind), fallback, 1, 65535);
@@ -170,6 +196,8 @@ inline long basePort(Collective kind) {
 // inside PeelTree; the binomial bridge adds that offset itself. Rings use W^2.
 inline uint64_t portSpan(Algorithm algorithm, int worldSize) {
   const uint64_t w = static_cast<uint64_t>(worldSize);
+  if (algorithm == Algorithm::NativeAllreduceReno || algorithm == Algorithm::NativeReduceScatterReno)
+    return 2 * w * w * w;
   return (needsTopology(algorithm) ||
           algorithm == Algorithm::BinomialStopAndWait) ? w * w * w : w * w;
 }
@@ -177,12 +205,14 @@ inline uint64_t portSpan(Algorithm algorithm, int worldSize) {
 inline void validatePortRanges(int worldSize) {
   GLOO_ENFORCE(worldSize >= 1 && worldSize <= 256,
                "PEEL's packet rank field supports world sizes 1..256");
-  for (int i = 0; i < 3; ++i) {
+  for (int i = 0; i < 4; ++i) {
     const auto kind = static_cast<Collective>(i);
     const auto algorithm = selectedAlgorithm(kind);
     if (!isPeel(algorithm)) continue;
     const uint64_t first = basePort(kind);
-    const uint64_t last = first + portSpan(algorithm, worldSize) - 1;
+    const uint64_t span = portSpan(algorithm, worldSize);
+    GLOO_ENFORCE(span > 0 && span <= 65536 - first, portVariable(kind), " cannot fit ", span, " reserved ports");
+    const uint64_t last = first + span - 1;
     GLOO_ENFORCE(last <= 65535, portVariable(kind),
                  " reserves ports through ", last, "; reduce the base port");
     for (int j = 0; j < i; ++j) {
@@ -190,7 +220,9 @@ inline void validatePortRanges(int worldSize) {
       const auto otherAlgorithm = selectedAlgorithm(other);
       if (!isPeel(otherAlgorithm)) continue;
       const uint64_t otherFirst = basePort(other);
-      const uint64_t otherLast = otherFirst + portSpan(otherAlgorithm, worldSize) - 1;
+      const uint64_t otherSpan = portSpan(otherAlgorithm, worldSize);
+      GLOO_ENFORCE(otherSpan > 0 && otherSpan <= 65536 - otherFirst, portVariable(other), " cannot fit reserved ports");
+      const uint64_t otherLast = otherFirst + otherSpan - 1;
       GLOO_ENFORCE(last < otherFirst || otherLast < first,
                    "Overlapping PEEL port ranges: ", portVariable(other),
                    " and ", portVariable(kind),
@@ -219,6 +251,8 @@ inline void validatePortRanges(int worldSize) {
 
 #include "gloo/transport/peel/peel_allgather.h"
 #include "gloo/transport/peel/peel_allreduce_ring.h"
+#include "gloo/transport/peel/peel_allreduce.h"
+#include "gloo/transport/peel/peel_allreduce_ring_sharded.h"
 #include "gloo/transport/peel/peel_context.h"
 #include "gloo/transport/unbound_buffer.h"
 #include "gloo/types.h"
@@ -304,7 +338,7 @@ inline transport::peel::PeelContextConfig makeConfig(
 
 // Small setup messages travel over the existing TCP Gloo connections. They
 // never call gloo::allgather(), avoiding recursive PEEL dispatch. Prefixes
-// 0x70..0x72 are private to this bridge; ordinary Gloo uses 0x01..0x08.
+// 0x70..0x73 are private to this bridge; ordinary Gloo uses 0x01..0x08.
 template <typename T>
 inline std::vector<T> exchangeSetup(
     const std::shared_ptr<Context>& context, Collective kind, uint32_t tag,
@@ -345,10 +379,12 @@ class Runtime {
     static Runtime broadcast(Collective::Broadcast);
     static Runtime allgather(Collective::Allgather);
     static Runtime allreduce(Collective::Allreduce);
+    static Runtime reduceScatter(Collective::ReduceScatter);
     switch (kind) {
       case Collective::Broadcast: return broadcast;
       case Collective::Allgather: return allgather;
       case Collective::Allreduce: return allreduce;
+      case Collective::ReduceScatter: return reduceScatter;
     }
     return broadcast;
   }
@@ -397,11 +433,46 @@ class Runtime {
                  uint32_t tag, std::chrono::milliseconds timeout) {
     auto lock = operationLock();
     initialize(context, algorithm, tag, timeout);
-    auto& peel = ensureContext(context, 0, tag, timeout);
     trace(tag, elements * elementSize);
+    if (algorithm == Algorithm::NativeAllreduceReno) {
+      auto& operation = ensureNativeReduction(context, tag, timeout);
+      GLOO_ENFORCE(operation.run(data, elements, elementSize, reduce), algorithmName(kind_, algorithm), " failed");
+      traceReduction(operation);
+      return;
+    }
+    auto& peel = ensureContext(context, 0, tag, timeout);
+    if (algorithm == Algorithm::RingAllreduceShardedReno) {
+      transport::peel::PeelAllreduceRingShardedGeneric operation(context->rank, peel.ringHops());
+      GLOO_ENFORCE(operation.run(data, elements, elementSize, reduce), algorithmName(kind_, algorithm), " failed");
+      traceReduction(operation);
+      return;
+    }
     transport::peel::PeelAllreduceRingGeneric operation(
         context->rank, peel.ringHops(), {data}, elements, elementSize, std::move(reduce));
     GLOO_ENFORCE(operation.run(), algorithmName(kind_, algorithm), " failed");
+  }
+
+  void reduceScatter(const std::shared_ptr<Context>& context, Algorithm algorithm,
+                     const void* input, void* output, size_t elements, size_t elementSize,
+                     transport::peel::PeelAllreduce::ReduceFunction reduce,
+                     uint32_t tag, std::chrono::milliseconds timeout) {
+    auto lock = operationLock();
+    GLOO_ENFORCE(algorithm == Algorithm::NativeReduceScatterReno ||
+                 algorithm == Algorithm::RingReduceScatterShardedReno, "Unsupported PEEL reduce-scatter algorithm");
+    initialize(context, algorithm, tag, timeout);
+    trace(tag, elements * elementSize);
+    if (algorithm == Algorithm::RingReduceScatterShardedReno) {
+      auto& peel = ensureContext(context, 0, tag, timeout);
+      transport::peel::PeelAllreduceRingShardedGeneric operation(context->rank, peel.ringHops());
+      GLOO_ENFORCE(operation.reduceScatter(input, output, elements, elementSize, reduce),
+                   algorithmName(kind_, algorithm), " failed");
+      traceReduction(operation);
+      return;
+    }
+    auto& operation = ensureNativeReduction(context, tag, timeout);
+    GLOO_ENFORCE(operation.reduceScatter(input, output, elements, elementSize, reduce),
+                 algorithmName(kind_, algorithm), " failed");
+    traceReduction(operation);
   }
 
  private:
@@ -426,6 +497,7 @@ class Runtime {
       return;
     }
     config_ = makeConfig(context, kind_, algorithm, timeout);
+    tileBytes_ = static_cast<size_t>(integerEnv("GLOO_PEEL_ALLREDUCE_TILE_BYTES", 256 * 1024, 16, 16 * 1024 * 1024));
     const auto mode = env("GLOO_PEEL_ALLGATHER_MODE");
     GLOO_ENFORCE(mode.empty() || mode == "parallel" || mode == "sequential",
                  "GLOO_PEEL_ALLGATHER_MODE must be parallel or sequential");
@@ -443,6 +515,8 @@ class Runtime {
     // paths may differ; wire settings and topology bytes must agree.
     std::string settings = std::to_string(static_cast<int>(algorithm)) + ":" +
         config_.mcast_group + ":" + std::to_string(config_.base_port) + ":" +
+        std::to_string(config_.rto_ms) + ":" + std::to_string(config_.timeout_ms) + ":" +
+        std::to_string(tileBytes_) + ":" +
         std::to_string(config_.ttl) + ":" + std::to_string(config_.dscp) + ":" +
         std::to_string(config_.max_chunk_size) + ":" +
         std::to_string(config_.reno_dupack_pct) + ":" +
@@ -473,6 +547,26 @@ class Runtime {
     boundContext_ = context;
     trace_ = boolEnv("GLOO_PEEL_TRACE", false);
     initialized_ = true;
+  }
+
+  transport::peel::PeelAllreduce& ensureNativeReduction(
+      const std::shared_ptr<Context>& context, uint32_t tag, std::chrono::milliseconds timeout) {
+    if (nativeReduction_) return *nativeReduction_;
+    auto operation = std::make_unique<transport::peel::PeelAllreduce>(config_, tileBytes_);
+    GLOO_ENFORCE(operation->initReno(), "SDN PEEL reduction initialization failed");
+    setupBarrier(context, kind_, tag, timeout);
+    nativeReduction_ = std::move(operation);
+    return *nativeReduction_;
+  }
+
+  template <typename Reduction>
+  void traceReduction(const Reduction& operation) {
+    if (!trace_) return;
+    const auto& stats = operation.lastStats();
+    std::cerr << "gloo " << algorithmName(kind_, algorithm_) << " phases: rank=" << config_.rank
+              << " rs_seconds=" << stats.reduceScatterSeconds << " ag_seconds=" << stats.allgatherSeconds
+              << " rs_logical_send_bytes=" << stats.reduceScatterSendBytes
+              << " ag_logical_send_bytes=" << stats.allgatherSendBytes << "\n";
   }
 
   transport::peel::PeelContext& ensureContext(
@@ -514,6 +608,8 @@ class Runtime {
   bool initialized_ = false;
   bool parallelAllgather_ = false;
   bool trace_ = false;
+  size_t tileBytes_ = 256 * 1024;
+  std::unique_ptr<transport::peel::PeelAllreduce> nativeReduction_;
   std::weak_ptr<Context> boundContext_;
   transport::peel::PeelContextConfig config_;
   std::vector<std::unique_ptr<transport::peel::PeelContext>> contexts_;
